@@ -1,0 +1,262 @@
+---
+title: "Machine Learning Project - Sensor Data"
+author: "Shubhadeep Purkayastha"
+date: "3/16/2017"
+output: html_document
+---
+
+### **Introduction**
+#### Using devices such as Jawbone Up, Nike Fuelband, and Fitbit it is now possible to collect a large amount of data about personal activity. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health or to find patterns in their behavior. 
+#### However, rarely do people quantify how well they do a particular activity. In this project, we will use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants, who were asked to perform barbell lifts correctly and incorrectly in 5 different ways. 
+
+#### Data for this project comes from http://groupware.les.inf.puc-rio.br/har (http://groupware.les.inf.puc-rio.br/har)
+#### Six participants performed 10 bicep curls in five different fashions: exactly according to the correct specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+#### The goal of this project is to predict how well a bicep curl was performed using the data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. 
+
+
+### **Data Processing**
+#### The data appears at first to have a lot of NA values. The data is provided with aggregated statistical metrics across each window of observation. The columns that contain these aggregated values are assigned NA while the data is collected. For this analysis I chose to separate the aggregated data and the raw data into 2 data frames and build models off of both. The section of code below includes creating a training/testing partition and separating the aggregated data columns from the raw data and finally the removal of the NA values from the summarized data.
+
+#### Loading the required libraries
+```{r, results= "hide"}
+suppressPackageStartupMessages(library(AppliedPredictiveModeling)) 
+suppressPackageStartupMessages(library(caret))
+suppressPackageStartupMessages(library(kernlab))
+suppressPackageStartupMessages(library(randomForest))
+```
+
+#### Download full data for partitioning
+```{r, results="hide"}
+fileUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+download.file(fileUrl, destfile= "./Sensordata/training.csv", method = "curl")
+data <- read.csv("./Sensordata/training.csv", sep=",", header=TRUE, 
+                 na.strings = c("#DIV/0!", "NA", "N/A", "null", "?"))
+head(data)
+names(data)
+dim(data)
+```
+
+#### Download 20 Case data for validation
+```{r, results= "hide"}
+fileUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(fileUrl, destfile= "./sensordata/testing.csv", method = "curl")
+validation <- read.csv("./Sensordata/testing.csv", sep=",", header=TRUE,
+                       na.strings = c("#DIV/0!", "NA", "N/A", "null", "?"))
+head(validation)
+dim(validation)
+```
+
+#### Exploring the dataset and the predictor variable to be used
+```{r, results= "hide"}
+summary(data)
+```
+```{r}
+dim(data)
+class(data$classe)
+table(data$classe)
+table(data$new_window)
+```
+
+#### Determining the quantity of NA values in the data 
+```{r}
+NA.levels <- unique(apply(data, 2,function(x){sum(is.na(x))}))
+number.NA <- dim(data)[1]- NA.levels[2]
+non.NA <- number.NA/dim(data)[1]
+sprintf("%1.2f%%", 100*non.NA)
+```
+#### Setting empty spaces and div0 values to NA
+```{r}
+data[data == ""] <- NA
+data[data == "#DIV/0!"] <- NA
+data[data == "<NA>"] <- NA
+```
+
+#### Partitioning the data 80/20 and creating the training & testing datasets
+```{r, results= "hide"}
+suppressPackageStartupMessages(library(AppliedPredictiveModeling)) 
+suppressPackageStartupMessages(library(caret))
+set.seed(22)
+inTrain <- createDataPartition(data$classe, p=0.8, list=FALSE)
+training <- data[inTrain,]
+testing <- data[-inTrain,]
+names(training)
+dim(training)
+dim(testing)
+```
+
+```{r}
+table(training$new_window)
+```
+
+#### Selecting non-aggregated sensor data
+```{r}
+train_raw <- training[which(training$new_window == "no"),]
+test_raw <- testing[which(testing$new_window == "no"),]
+train_raw <- train_raw[!colSums(is.na(train_raw)) > 0]
+table(train_raw$new_window)
+
+sum(is.na(train_raw))
+```
+
+#### Selecting aggregated sensor data
+```{r}
+train_agg <- training[which(training$new_window == "yes"),]
+test_agg <- testing[which(testing$new_window == "yes"),]
+table(train_agg$new_window)
+```
+```{r}
+table(test_agg$new_window)
+```
+
+#### Some more pre-processing of the aggregated data before model fitting
+#### Removing data columns contaning NA or zero values
+```{r}
+train_agg.clean <- subset(train_agg, 
+                     select=-c(kurtosis_yaw_belt,skewness_yaw_belt,amplitude_yaw_belt,
+                     kurtosis_yaw_dumbbell,skewness_yaw_dumbbell,amplitude_yaw_dumbbell,
+                     kurtosis_yaw_forearm,skewness_yaw_forearm,amplitude_yaw_forearm))
+
+test_agg.clean <- subset(test_agg, 
+                     select=-c(kurtosis_yaw_belt,skewness_yaw_belt,amplitude_yaw_belt,
+                     kurtosis_yaw_dumbbell,skewness_yaw_dumbbell,amplitude_yaw_dumbbell,
+                     kurtosis_yaw_forearm,skewness_yaw_forearm,amplitude_yaw_forearm))
+```
+#### Removing rows containing NA values & confirming the purity of the data
+```{r}
+train.final <- train_agg.clean[complete.cases(train_agg.clean),]
+sum(is.na(train.final))
+```
+```{r}
+test.final <- test_agg.clean[complete.cases(test_agg.clean),]
+sum(is.na(test.final))
+```
+
+### **Model Fitting**
+#### A random forest (RF) model is best suited for model fitting in this scenario because the sensor data has a lot of noise. The RF model uses bootstrap resampling with the training set partition given above to crossvalidate against the testing set. Since the fit uses all the possible (59) clean predictor variables, k-fold cross validation would be computationally intensive and not suitable towards the present purpose.
+
+### Model Fitting - Model 1
+#### Not including the index X row in the dataset. The data is organized alphabetically by class outcome.
+```{r}
+library(randomForest)
+model1 <- randomForest(classe~. , data=train_raw[,-c(1:7)], method="class") 
+model1
+```
+```{r}
+pred_test1 <- predict(model1, testing)
+pred_train1 <- predict(model1, training)
+
+confusionMatrix(pred_test1, testing$classe)
+```
+```{r}
+confusionMatrix(pred_train1, training$classe)
+```
+
+### Model Fitting - Model 2
+#### The second model (model2) uses feature selection to narrow down the 59 predictors to only 7 chosen variables: classe ~ roll_belt + pitch_belt + yaw_belt + magnet_arm_ + gyros_dumbbell_y + magnet_dumbbell_y + pitch_forearm. To create this model, 3-fold crossvalidation was implemented with the caret package.
+#### Using Correlation based feature selection and best-first algorithm
+
+```{r, eval=FALSE}
+suppressPackageStartupMessages(library(caret))
+suppressPackageStartupMessages(library(FSelector))
+
+feature.select <- cfs(classe ~.,train_raw.clean[,-c(1:7)])
+f <- as.simple.formula(feature.select, "classe")
+
+fitControl <- trainControl(method = "cv", number = 3, repeats = 3)
+model2 <- train(f, method = "rf", data =train_raw.clean, trControl = fitControl)
+model2
+```
+```{r}
+## 
+## Call:
+## Random Forest
+##
+## 15699 samples
+##     7 predictor
+##     5 classes: 'A', 'B', 'C', 'D', 'E'
+##
+## No pre-processing
+## Resampling: Cross-Validated (3 fold)
+## Summary of sample sizes: 10466, 10465, 10467
+## Resampling results across tuning parameters:
+##
+##   mtry  Accuracy   Kappa
+##   2     0.9761127  0.9697912
+##   4     0.9738197  0.9668918
+##   7     0.9661761  0.9572249
+##
+## Accuracy was used to select the optimal model using  the largest value.
+## The final value used for the model was mtry = 22
+```
+```{r, eval= FALSE}
+pred_test2 <- predict(model2, testing)
+pred_train2 <- predict(model2, training)
+
+confusionMatrix(pred_test2, testing$classe)
+```
+```{r, eval= FALSE}
+confusionMatrix(pred_train2, training$classe)
+```
+
+
+### Model Fitting - Model 3
+#### The final model (model3) is fit using the provided summary data. 
+#### To create this model, 3-fold crossvalidation was implemented with the caret package.
+#### Using summary statistics for prediction
+```{r, eval= FALSE}
+suppressPackageStartupMessages(library(caret))
+suppressPackageStartupMessages(library(FSelector))
+
+features3 <- cfs(classe ~.,train.final[,-c(1:7)])
+z <- as.simple.formula(features3, "classe")
+
+model3 <- train(z, method = "rf", data =train.final, trControl = fitControl)
+model3
+```
+```{r}
+##
+## Call:
+#￼# Random Forest
+##
+## 187 samples
+##  11 predictor
+##   5 classes: 'A', 'B', 'C', 'D', 'E'
+##
+## No pre-processing
+## Resampling: Cross-Validated (3 fold)
+## Summary of sample sizes: 124, 126, 124
+## Resampling results across tuning parameters:
+##
+##   mtry  Accuracy   Kappa
+##      2  0.2567439  0.0000000
+##     53  0.6462833  0.5482757
+##   1456  0.6782028  0.5940114
+##
+## Accuracy was used to select the optimal model using  the largest value.
+## The final value used for the model was mtry = 1456.
+```
+
+```{r, eval= FALSE}
+pred_test3 <- predict(model3, test.final)
+pred_train3 <- predict(model3, train.final)
+
+confusionMatrix(pred_test3, test.final$classe)
+```
+```{r, eval= FALSE}
+confusionMatrix(pred_test3, train.final$classe)
+```
+
+### **Conclusions**
+#### The first model (model1) achieves an estimated out of sample **error rate of 0.46%**. 
+#### The second model (model2) achieves a 97.61% accuracy with an **expected error of 2.31%**. The expected error is higher, but is still very successful considering this model uses 52 fewer predictors (used only 7 selected predictors). 
+#### The third model achieves an accuracy of only 71.74%, or a **28.26% expected error** rate against the test validation set. Therefore, using the summary statistics for prediction leads to reduced accuracy. The most differetiating variable is the belt sensor, which quickly distinguishes a number of cases where the individual commits a class E mistake (“throwing the hips to the front”). 
+
+####The first model performed the best overall and will be used to predict the validation test set.
+```{r}
+predict(model1,validation)
+```
+
+### **APPENDIX**
+#### Ugulino, W.; Cardador, D.; Vega, K.; Velloso, E.; Milidiu, R.; Fuks, H. Wearable Computing: Accelerometers’ Data Classification of Body Postures and Movements. Proceedings of 21st Brazilian Symposium on Artificial Intelligence. Advances in Artificial Intelligence - SBIA 2012. In: Lecture Notes in Computer Science. , pp. 52- 61. Curitiba, PR: Springer Berlin / Heidelberg, 2012. ISBN 978-3-642-34458-9. DOI: 10.1007/978-3-642- 34459-6_6. 
+#### L. B. Statistics and L. Breiman. Random forests. In Machine Learning, pages 5–32, 2001.
+#### Read more: http://groupware.les.inf.puc-rio.br/har#sbia_paper_section#ixzz4NpZpLz5s (http://groupware.les.inf.puc-rio.br/har#sbia_paper_section#ixzz4NpZpLz5s)
